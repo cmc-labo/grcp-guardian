@@ -250,6 +250,40 @@ middleware.RateLimitPerMethod(map[string]ratelimit.Config{
 })
 ```
 
+### Circuit Breaker Middleware
+
+```go
+// Basic circuit breaker
+middleware.CircuitBreakerMiddleware(
+    middleware.WithFailureThreshold(0.5),      // Open after 50% failure rate
+    middleware.WithTimeout(30*time.Second),     // Stay open for 30 seconds
+    middleware.WithMaxRequests(5),              // Max requests in half-open state
+    middleware.WithSuccessThreshold(3),         // Successes needed to close
+)
+
+// With state change callback
+middleware.CircuitBreakerMiddleware(
+    middleware.WithFailureThreshold(0.6),
+    middleware.WithInterval(60*time.Second),    // Failure counting window
+    middleware.WithOnStateChange(func(from, to middleware.State) {
+        log.Printf("Circuit breaker: %s -> %s", from, to)
+        // Emit metrics, send alerts, etc.
+    }),
+)
+
+// Custom failure detection
+middleware.CircuitBreakerMiddleware(
+    middleware.WithIsFailure(func(err error) bool {
+        // Define which errors should trip the circuit
+        st, ok := status.FromError(err)
+        if !ok {
+            return true
+        }
+        return st.Code() == codes.Unavailable || st.Code() == codes.DeadlineExceeded
+    }),
+)
+```
+
 ### Chaos Engineering Middleware
 
 ```go
@@ -304,31 +338,35 @@ Benchmarks on Intel Xeon E5-2680 v4 @ 2.40GHz, 64GB RAM:
 
 ```
 grpc-guardian/
-├── middleware/           # Core middleware implementations
-│   ├── auth.go          # Authentication middleware
-│   ├── logging.go       # Logging middleware
-│   ├── ratelimit.go     # Rate limiting middleware
-│   ├── circuit_breaker.go
+├── middleware/                    # Core middleware implementations
+│   ├── auth.go                   # Authentication middleware
+│   ├── logging.go                # Logging middleware
+│   ├── ratelimit.go              # Rate limiting middleware
+│   ├── circuit_breaker.go        # NEW: Circuit breaker pattern
+│   ├── circuit_breaker_test.go   # Circuit breaker tests
 │   └── retry.go
-├── chaos/               # Chaos engineering features
-│   ├── latency.go       # Latency injection
-│   ├── error.go         # Error injection
-│   ├── timeout.go       # Timeout simulation
-│   └── shadow.go        # Traffic shadowing
-├── interceptor/         # gRPC interceptor implementations
-│   ├── unary.go         # Unary interceptor
-│   └── stream.go        # Stream interceptor
+├── chaos/                         # Chaos engineering features
+│   ├── latency.go                # Latency injection
+│   ├── error.go                  # Error injection
+│   ├── timeout.go                # Timeout simulation
+│   └── shadow.go                 # Traffic shadowing
+│   └── chaos.go                  # Chaos coordinator
+├── interceptor/                   # gRPC interceptor implementations
+│   ├── unary.go                  # Unary interceptor
+│   └── stream.go                 # Stream interceptor
 ├── pkg/
-│   ├── auth/            # Authentication utilities
-│   ├── ratelimit/       # Rate limiting algorithms
-│   └── logging/         # Logging utilities
+│   ├── auth/                     # Authentication utilities
+│   ├── ratelimit/                # Rate limiting algorithms
+│   └── logging/                  # Logging utilities
 ├── examples/
-│   ├── simple-server/   # Basic usage example
-│   ├── chaos-demo/      # Chaos engineering demo
-│   ├── auth-example/    # Authentication example
-│   └── benchmark/       # Performance benchmarks
-├── chain.go             # Middleware chain implementation
-├── guardian.go          # Main entry point
+│   ├── simple-server/            # Basic usage example
+│   ├── chaos-demo/               # Chaos engineering demo
+│   ├── circuit-breaker-demo/     # NEW: Circuit breaker demo
+│   ├── resilience-demo/          # NEW: Full resilience stack
+│   ├── auth-example/             # Authentication example
+│   └── benchmark/                # Performance benchmarks
+├── chain.go                       # Middleware chain implementation
+├── guardian.go                    # Main entry point
 └── README.md
 ```
 
@@ -399,7 +437,50 @@ chain := guardian.NewChain(
 )
 ```
 
-### Example 3: Custom Middleware
+### Example 3: Circuit Breaker with Resilience
+
+```go
+// Production-ready resilience stack
+chain := guardian.NewChain(
+    // Logging for observability
+    middleware.Logging(),
+
+    // Circuit breaker to prevent cascade failures
+    middleware.CircuitBreakerMiddleware(
+        middleware.WithFailureThreshold(0.5),      // Open at 50% failure
+        middleware.WithTimeout(30*time.Second),     // Stay open 30s
+        middleware.WithInterval(60*time.Second),    // Count failures over 60s
+        middleware.WithMaxRequests(5),              // 5 requests in half-open
+        middleware.WithSuccessThreshold(3),         // 3 successes to close
+        middleware.WithOnStateChange(func(from, to middleware.State) {
+            log.Printf("Circuit: %s -> %s", from, to)
+            metrics.CircuitBreakerStateGauge.Set(float64(to))
+        }),
+    ),
+
+    // Rate limiting to prevent overload
+    middleware.RateLimit(100, 10),
+)
+
+// Circuit Breaker State Machine:
+//
+//  ┌─────────┐
+//  │ Closed  │ ◄────────────────────┐
+//  │ Normal  │                      │
+//  └────┬────┘                      │
+//       │ Failure Rate > 50%        │ 3 Consecutive
+//       │                           │ Successes
+//       ▼                           │
+//  ┌─────────┐     Timeout          │
+//  │  Open   │────────────────► ┌───┴────────┐
+//  │ Failing │                  │ Half-Open  │
+//  └─────────┘                  │  Testing   │
+//       ▲                       └────────────┘
+//       │ Any Failure                │
+//       └────────────────────────────┘
+```
+
+### Example 4: Custom Middleware
 
 ```go
 // Custom request validation middleware
@@ -468,14 +549,17 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 
 ### v1.0 (Current)
 - [x] Core middleware chain system
-- [ ] Authentication middleware (JWT, API Key)
-- [ ] Logging middleware
-- [ ] Rate limiting middleware
-- [ ] Chaos engineering features
+- [x] Authentication middleware (JWT, API Key)
+- [x] Logging middleware
+- [x] Rate limiting middleware
+- [x] Chaos engineering features
+- [x] **Circuit Breaker pattern** - ✅ Implemented!
 
 ### v1.1 (Planned)
+- [ ] Retry middleware with exponential backoff
+- [ ] Timeout middleware
+- [ ] Metrics collection (Prometheus)
 - [ ] OpenTelemetry integration
-- [ ] Prometheus metrics exporter
 - [ ] Advanced circuit breaker patterns
 - [ ] Service mesh integration (Istio, Linkerd)
 
