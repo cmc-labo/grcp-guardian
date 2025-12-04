@@ -32,17 +32,21 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 - **Adaptive Rate Limiting**: Dynamic adjustment based on load
 - **Quota Management**: Request quota enforcement
 
-#### 4. Chaos Engineering
+#### 4. Resilience & Fault Tolerance
+- **Retry Logic**: Automatic retry with exponential backoff
+- **Circuit Breaking**: Automatic failure detection and recovery
+- **Timeout Control**: Request timeout management
+- **Bulkhead Isolation**: Resource isolation between services
+
+#### 5. Chaos Engineering
 - **Latency Injection**: Simulate network delays
 - **Error Injection**: Random error responses
 - **Timeout Simulation**: Test timeout handling
-- **Circuit Breaking**: Automatic failure detection
 - **Traffic Shadowing**: Duplicate traffic for testing
 
 ### Production Features
 - **Health Checks**: Built-in health check endpoints
 - **Graceful Shutdown**: Proper connection draining
-- **Retry Logic**: Automatic retry with exponential backoff
 - **Load Balancing**: Client-side load balancing support
 - **Compression**: Automatic gRPC compression support
 
@@ -250,6 +254,37 @@ middleware.RateLimitPerMethod(map[string]ratelimit.Config{
 })
 ```
 
+### Retry Middleware
+
+```go
+// Basic retry with exponential backoff
+retry := middleware.NewRetry(
+    middleware.WithMaxAttempts(3),
+    middleware.WithInitialBackoff(100*time.Millisecond),
+    middleware.WithBackoffMultiplier(2.0),
+)
+
+// Use as client interceptor
+conn, err := grpc.Dial(
+    "localhost:50051",
+    grpc.WithUnaryInterceptor(retry.UnaryClientInterceptor()),
+    grpc.WithStreamInterceptor(retry.StreamClientInterceptor()),
+)
+
+// Advanced configuration
+retry := middleware.NewRetry(
+    middleware.WithMaxAttempts(5),
+    middleware.WithInitialBackoff(50*time.Millisecond),
+    middleware.WithMaxBackoff(10*time.Second),
+    middleware.WithJitter(true),  // Add randomness to prevent thundering herd
+    middleware.WithRetryableCodes(codes.Unavailable, codes.ResourceExhausted),
+    middleware.WithOnRetry(func(attempt int, err error, nextBackoff time.Duration) {
+        log.Printf("Retry attempt %d after error: %v (waiting %v)", attempt, err, nextBackoff)
+        // Emit metrics, log, send alerts
+    }),
+)
+```
+
 ### Circuit Breaker Middleware
 
 ```go
@@ -437,10 +472,19 @@ chain := guardian.NewChain(
 )
 ```
 
-### Example 3: Circuit Breaker with Resilience
+### Example 3: Retry with Circuit Breaker
 
 ```go
-// Production-ready resilience stack
+// Combine retry and circuit breaker for resilience
+retry := middleware.NewRetry(
+    middleware.WithMaxAttempts(3),
+    middleware.WithInitialBackoff(100*time.Millisecond),
+    middleware.WithJitter(true),
+    middleware.WithOnRetry(func(attempt int, err error, backoff time.Duration) {
+        log.Printf("Retry attempt %d: %v", attempt, err)
+    }),
+)
+
 chain := guardian.NewChain(
     // Logging for observability
     middleware.Logging(),
@@ -460,6 +504,12 @@ chain := guardian.NewChain(
 
     // Rate limiting to prevent overload
     middleware.RateLimit(100, 10),
+)
+
+// Client-side with retry
+conn, _ := grpc.Dial(
+    "localhost:50051",
+    grpc.WithUnaryInterceptor(retry.UnaryClientInterceptor()),
 )
 
 // Circuit Breaker State Machine:
@@ -555,8 +605,8 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 - [x] Chaos engineering features
 - [x] **Circuit Breaker pattern** - ✅ Implemented!
 
-### v1.1 (Planned)
-- [ ] Retry middleware with exponential backoff
+### v1.1 (In Progress)
+- [x] **Retry middleware with exponential backoff** - ✅ Implemented!
 - [ ] Timeout middleware
 - [ ] Metrics collection (Prometheus)
 - [ ] OpenTelemetry integration
