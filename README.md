@@ -35,7 +35,7 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 #### 4. Resilience & Fault Tolerance
 - **Retry Logic**: Automatic retry with exponential backoff
 - **Circuit Breaking**: Automatic failure detection and recovery
-- **Timeout Control**: Request timeout management
+- **Timeout Control**: Request timeout management with per-method configuration
 - **Bulkhead Isolation**: Resource isolation between services
 
 #### 5. Chaos Engineering
@@ -254,6 +254,50 @@ middleware.RateLimitPerMethod(map[string]ratelimit.Config{
 })
 ```
 
+### Timeout Middleware
+
+```go
+// Simple timeout: 5 seconds for all requests
+middleware.TimeoutSimple(5 * time.Second)
+
+// With callback on timeout
+middleware.Timeout(
+    middleware.WithTimeout(10*time.Second),
+    middleware.WithTimeoutCallback(func(method string, duration time.Duration) {
+        log.Printf("Timeout: %s exceeded %v", method, duration)
+        // Emit metrics, send alerts, etc.
+    }),
+)
+
+// Per-method timeout configuration
+middleware.TimeoutPerMethod(
+    5*time.Second, // default timeout
+    map[string]time.Duration{
+        "/api.Service/FastMethod":  1*time.Second,
+        "/api.Service/SlowMethod":  30*time.Second,
+        "/api.Service/QueryMethod": 15*time.Second,
+    },
+)
+
+// Stream timeout
+grpc.NewServer(
+    grpc.StreamInterceptor(middleware.StreamTimeout(30*time.Second)),
+)
+
+// Advanced configuration
+middleware.Timeout(
+    middleware.WithTimeout(10*time.Second),
+    middleware.WithPerMethodTimeout(map[string]time.Duration{
+        "/api.Service/Upload":   60*time.Second,
+        "/api.Service/Download": 120*time.Second,
+    }),
+    middleware.WithTimeoutCallback(func(method string, duration time.Duration) {
+        metrics.TimeoutCounter.Inc()
+        log.Warnf("Request timeout: method=%s duration=%v", method, duration)
+    }),
+)
+```
+
 ### Retry Middleware
 
 ```go
@@ -377,9 +421,12 @@ grpc-guardian/
 │   ├── auth.go                   # Authentication middleware
 │   ├── logging.go                # Logging middleware
 │   ├── ratelimit.go              # Rate limiting middleware
-│   ├── circuit_breaker.go        # NEW: Circuit breaker pattern
+│   ├── circuit_breaker.go        # Circuit breaker pattern
 │   ├── circuit_breaker_test.go   # Circuit breaker tests
-│   └── retry.go
+│   ├── retry.go                  # Retry with exponential backoff
+│   ├── retry_test.go             # Retry tests
+│   ├── timeout.go                # NEW: Timeout middleware
+│   └── timeout_test.go           # NEW: Timeout tests
 ├── chaos/                         # Chaos engineering features
 │   ├── latency.go                # Latency injection
 │   ├── error.go                  # Error injection
@@ -396,8 +443,10 @@ grpc-guardian/
 ├── examples/
 │   ├── simple-server/            # Basic usage example
 │   ├── chaos-demo/               # Chaos engineering demo
-│   ├── circuit-breaker-demo/     # NEW: Circuit breaker demo
-│   ├── resilience-demo/          # NEW: Full resilience stack
+│   ├── circuit-breaker-demo/     # Circuit breaker demo
+│   ├── resilience-demo/          # Full resilience stack
+│   ├── retry-demo/               # Retry middleware demo
+│   ├── timeout-demo/             # NEW: Timeout middleware demo
 │   ├── auth-example/             # Authentication example
 │   └── benchmark/                # Performance benchmarks
 ├── chain.go                       # Middleware chain implementation
@@ -437,8 +486,14 @@ chain := guardian.NewChain(
     // Metrics collection
     middleware.Metrics(),
 
-    // Request timeout
-    middleware.Timeout(10*time.Second),
+    // Request timeout with per-method configuration
+    middleware.Timeout(
+        middleware.WithTimeout(10*time.Second),
+        middleware.WithPerMethodTimeout(map[string]time.Duration{
+            "/api.Service/Upload":   60*time.Second,
+            "/api.Service/Download": 120*time.Second,
+        }),
+    ),
 )
 ```
 
@@ -607,7 +662,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 
 ### v1.1 (In Progress)
 - [x] **Retry middleware with exponential backoff** - ✅ Implemented!
-- [ ] Timeout middleware
+- [x] **Timeout middleware** - ✅ Implemented!
 - [ ] Metrics collection (Prometheus)
 - [ ] OpenTelemetry integration
 - [ ] Advanced circuit breaker patterns
