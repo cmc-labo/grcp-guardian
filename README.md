@@ -24,7 +24,7 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 - **Structured Logging**: JSON-formatted logs with context
 - **Request/Response Logging**: Automatic gRPC call logging
 - **Performance Metrics**: Latency, throughput tracking
-- **Distributed Tracing**: OpenTelemetry integration ready
+- **Distributed Tracing**: Full OpenTelemetry + Jaeger integration ✨ NEW!
 
 #### 3. Rate Limiting
 - **Token Bucket Algorithm**: Industry-standard rate limiting
@@ -92,6 +92,84 @@ func main() {
 
     lis, _ := net.Listen("tcp", ":50051")
     log.Fatal(server.Serve(lis))
+}
+```
+
+### Distributed Tracing Example ✨ NEW!
+
+```go
+import (
+    "context"
+    guardian "github.com/grpc-guardian/grpc-guardian"
+    "github.com/grpc-guardian/grpc-guardian/middleware"
+    "github.com/grpc-guardian/grpc-guardian/pkg/tracing"
+)
+
+func main() {
+    // Initialize Jaeger tracing
+    tp, err := tracing.InitJaeger(
+        tracing.WithServiceName("my-service"),
+        tracing.WithServiceVersion("1.0.0"),
+        tracing.WithEnvironment("production"),
+        tracing.WithCollectorEndpoint("http://localhost:14268/api/traces"),
+        tracing.WithSamplingRate(1.0), // Sample all traces
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer tracing.Shutdown(context.Background(), tp)
+
+    // Create middleware chain with tracing
+    chain := guardian.NewChain(
+        middleware.Logging(),
+        middleware.Tracing(
+            middleware.WithRecordErrors(),
+            middleware.WithRecordEvents(),
+        ),
+    )
+
+    // Create gRPC server
+    server := grpc.NewServer(
+        grpc.UnaryInterceptor(chain.UnaryInterceptor()),
+    )
+
+    // Your traces will appear in Jaeger UI at http://localhost:16686
+}
+```
+
+#### Advanced Tracing Features
+
+```go
+// Add custom span attributes
+func (s *server) MyMethod(ctx context.Context, req *Request) (*Response, error) {
+    // Add custom attributes to current span
+    middleware.SetSpanAttribute(ctx, "user.id", req.UserId)
+    middleware.SetSpanAttribute(ctx, "request.size", len(req.Data))
+
+    // Add events to span
+    middleware.AddEventToSpan(ctx, "processing_started")
+
+    // Create child span for specific operation
+    ctx, span := middleware.StartSpan(ctx, "database-query")
+    defer span.End()
+
+    // Your business logic here
+    result := processRequest(req)
+
+    middleware.AddEventToSpan(ctx, "processing_completed")
+
+    return result, nil
+}
+
+// Record errors in spans
+func (s *server) ErrorMethod(ctx context.Context, req *Request) (*Response, error) {
+    err := someOperation()
+    if err != nil {
+        // Error will be recorded in the span
+        middleware.RecordError(ctx, err)
+        return nil, err
+    }
+    return &Response{}, nil
 }
 ```
 
@@ -298,6 +376,96 @@ middleware.Timeout(
 )
 ```
 
+### Distributed Tracing Middleware ✨ NEW!
+
+```go
+import (
+    "github.com/grpc-guardian/grpc-guardian/middleware"
+    "github.com/grpc-guardian/grpc-guardian/pkg/tracing"
+)
+
+// Initialize Jaeger exporter
+tp, err := tracing.InitJaeger(
+    tracing.WithServiceName("my-service"),
+    tracing.WithServiceVersion("1.0.0"),
+    tracing.WithEnvironment("production"),
+    tracing.WithCollectorEndpoint("http://localhost:14268/api/traces"),
+    tracing.WithSamplingRate(1.0), // Sample all traces
+    tracing.WithAttribute("team", "platform"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer tracing.Shutdown(context.Background(), tp)
+
+// Basic tracing middleware
+middleware.Tracing()
+
+// With service name
+middleware.TracingWithServiceName("my-service")
+
+// With options
+middleware.Tracing(
+    middleware.WithRecordErrors(),    // Record errors in spans
+    middleware.WithRecordEvents(),    // Record span events
+)
+
+// For streaming RPCs
+grpc.NewServer(
+    grpc.StreamInterceptor(
+        middleware.StreamTracing(
+            middleware.WithRecordErrors(),
+        ),
+    ),
+)
+
+// Helper functions for custom tracing
+func (s *server) MyHandler(ctx context.Context, req *Request) (*Response, error) {
+    // Add custom span attributes
+    middleware.SetSpanAttribute(ctx, "user.id", req.UserId)
+    middleware.SetSpanAttribute(ctx, "request.type", "important")
+
+    // Add span events
+    middleware.AddEventToSpan(ctx, "validation_started")
+
+    // Create child span
+    ctx, span := middleware.StartSpan(ctx, "database-operation")
+    defer span.End()
+
+    result, err := database.Query(ctx, req)
+    if err != nil {
+        // Record errors in current span
+        middleware.RecordError(ctx, err)
+        return nil, err
+    }
+
+    middleware.AddEventToSpan(ctx, "validation_completed")
+    return result, nil
+}
+```
+
+**Jaeger Setup:**
+
+```bash
+# Run Jaeger all-in-one (for development)
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 14268:14268 \
+  jaegertracing/all-in-one:latest
+
+# Access Jaeger UI
+open http://localhost:16686
+```
+
+**Features:**
+- Automatic span creation for each gRPC call
+- W3C Trace Context propagation
+- Custom span attributes and events
+- Error recording with stack traces
+- Streaming RPC support
+- Service topology visualization
+- Performance analysis and latency tracking
+
 ### Retry Middleware
 
 ```go
@@ -425,13 +593,15 @@ grpc-guardian/
 │   ├── circuit_breaker_test.go   # Circuit breaker tests
 │   ├── retry.go                  # Retry with exponential backoff
 │   ├── retry_test.go             # Retry tests
-│   ├── timeout.go                # NEW: Timeout middleware
-│   └── timeout_test.go           # NEW: Timeout tests
+│   ├── timeout.go                # Timeout middleware
+│   ├── timeout_test.go           # Timeout tests
+│   ├── tracing.go                # ✨ NEW: Distributed tracing middleware
+│   └── tracing_test.go           # ✨ NEW: Tracing tests
 ├── chaos/                         # Chaos engineering features
 │   ├── latency.go                # Latency injection
 │   ├── error.go                  # Error injection
 │   ├── timeout.go                # Timeout simulation
-│   └── shadow.go                 # Traffic shadowing
+│   ├── shadow.go                 # Traffic shadowing
 │   └── chaos.go                  # Chaos coordinator
 ├── interceptor/                   # gRPC interceptor implementations
 │   ├── unary.go                  # Unary interceptor
@@ -439,14 +609,18 @@ grpc-guardian/
 ├── pkg/
 │   ├── auth/                     # Authentication utilities
 │   ├── ratelimit/                # Rate limiting algorithms
-│   └── logging/                  # Logging utilities
+│   ├── logging/                  # Logging utilities
+│   └── tracing/                  # ✨ NEW: Distributed tracing utilities
+│       ├── jaeger.go             # Jaeger exporter configuration
+│       └── config.go             # Tracing configuration
 ├── examples/
 │   ├── simple-server/            # Basic usage example
 │   ├── chaos-demo/               # Chaos engineering demo
 │   ├── circuit-breaker-demo/     # Circuit breaker demo
 │   ├── resilience-demo/          # Full resilience stack
 │   ├── retry-demo/               # Retry middleware demo
-│   ├── timeout-demo/             # NEW: Timeout middleware demo
+│   ├── timeout-demo/             # Timeout middleware demo
+│   ├── tracing-demo/             # ✨ NEW: Distributed tracing demo
 │   ├── auth-example/             # Authentication example
 │   └── benchmark/                # Performance benchmarks
 ├── chain.go                       # Middleware chain implementation
@@ -459,11 +633,26 @@ grpc-guardian/
 ### Example 1: Production-Ready Server
 
 ```go
+// Initialize distributed tracing
+tp, _ := tracing.InitJaeger(
+    tracing.WithServiceName("production-service"),
+    tracing.WithServiceVersion("1.0.0"),
+    tracing.WithEnvironment("production"),
+    tracing.WithCollectorEndpoint(os.Getenv("JAEGER_ENDPOINT")),
+)
+defer tracing.Shutdown(context.Background(), tp)
+
 // Full production setup with all features
 chain := guardian.NewChain(
     // Request logging
     middleware.Logging(
         logging.WithLevel(zapcore.InfoLevel),
+    ),
+
+    // Distributed tracing with OpenTelemetry
+    middleware.Tracing(
+        middleware.WithRecordErrors(),
+        middleware.WithRecordEvents(),
     ),
 
     // JWT authentication
@@ -622,6 +811,12 @@ RATE_LIMIT=100
 
 # Circuit breaker threshold (0.0 - 1.0)
 CIRCUIT_BREAKER_THRESHOLD=0.5
+
+# Distributed Tracing Configuration
+TRACING_ENABLED=true
+JAEGER_ENDPOINT=http://localhost:14268/api/traces
+SERVICE_NAME=grpc-guardian-service
+ENVIRONMENT=production
 ```
 
 ## Testing
@@ -663,8 +858,8 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 ### v1.1 (In Progress)
 - [x] **Retry middleware with exponential backoff** - ✅ Implemented!
 - [x] **Timeout middleware** - ✅ Implemented!
+- [x] **Distributed Tracing (OpenTelemetry + Jaeger)** - ✅ Implemented!
 - [ ] Metrics collection (Prometheus)
-- [ ] OpenTelemetry integration
 - [ ] Advanced circuit breaker patterns
 - [ ] Service mesh integration (Istio, Linkerd)
 
