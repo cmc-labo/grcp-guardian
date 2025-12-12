@@ -13,4 +13,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.21.0
 	go.opentelemetry.io/otel/exporters/jaeger v1.17.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.46.1
+	github.com/prometheus/client_golang v1.17.0
+	github.com/prometheus/client_model v0.5.0
 )

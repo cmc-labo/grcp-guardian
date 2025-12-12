@@ -23,8 +23,8 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 #### 2. Logging & Observability
 - **Structured Logging**: JSON-formatted logs with context
 - **Request/Response Logging**: Automatic gRPC call logging
-- **Performance Metrics**: Latency, throughput tracking
-- **Distributed Tracing**: Full OpenTelemetry + Jaeger integration ✨ NEW!
+- **Prometheus Metrics**: Request rate, latency, errors, active requests ✨ NEW!
+- **Distributed Tracing**: Full OpenTelemetry + Jaeger integration
 
 #### 3. Rate Limiting
 - **Token Bucket Algorithm**: Industry-standard rate limiting
@@ -568,6 +568,145 @@ chaos.New(
 )
 ```
 
+### Metrics Collection (Prometheus) ✨ NEW!
+
+```go
+import (
+    "net/http"
+
+    "github.com/grpc-guardian/grpc-guardian/middleware"
+    "github.com/grpc-guardian/grpc-guardian/pkg/metrics"
+    "github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// Create Prometheus metrics collector
+collector, err := metrics.NewPrometheusCollector(
+    metrics.WithNamespace("grpc_guardian"),
+    metrics.WithSubsystem("api"),
+    metrics.WithConstLabels(map[string]string{
+        "service": "my-service",
+        "version": "1.0.0",
+    }),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use in middleware chain
+chain := guardian.NewChain(
+    middleware.Logging(),
+    middleware.MetricsMiddleware(collector),
+)
+
+// Expose metrics endpoint
+http.Handle("/metrics", promhttp.HandlerFor(
+    collector.GetRegistry(),
+    promhttp.HandlerOpts{
+        EnableOpenMetrics: true,
+    },
+))
+go http.ListenAndServe(":9090", nil)
+
+// Quick start with defaults
+chain := guardian.NewChain(
+    middleware.Metrics(), // Uses default Prometheus configuration
+)
+```
+
+**Available Metrics:**
+
+| Metric Name | Type | Description | Labels |
+|------------|------|-------------|--------|
+| `grpc_server_requests_total` | Counter | Total number of gRPC requests | `method`, `code` |
+| `grpc_server_request_duration_seconds` | Histogram | Request latency distribution | `method`, `code` |
+| `grpc_server_active_requests` | Gauge | Number of active requests | `method` |
+| `grpc_server_errors_total` | Counter | Total number of errors | `method`, `error_type` |
+| `grpc_server_message_sent_bytes` | Histogram | Size of sent messages | `method`, `direction` |
+| `grpc_server_message_received_bytes` | Histogram | Size of received messages | `method`, `direction` |
+
+**Configuration Options:**
+
+```go
+// Custom configuration
+collector, _ := metrics.NewPrometheusCollector(
+    // Set namespace and subsystem
+    metrics.WithNamespace("myapp"),
+    metrics.WithSubsystem("grpc"),
+
+    // Custom histogram buckets (in seconds)
+    metrics.WithHistogramBuckets([]float64{
+        0.001, 0.01, 0.1, 1.0, 10.0,
+    }),
+
+    // Add constant labels
+    metrics.WithConstLabels(map[string]string{
+        "environment": "production",
+        "region":      "us-west-2",
+    }),
+
+    // Disable histogram (use only counter and gauge)
+    metrics.WithoutHistogram(),
+
+    // Disable per-method metrics (aggregate all methods)
+    metrics.WithoutPerMethodMetrics(),
+)
+```
+
+**Example Prometheus Queries:**
+
+```promql
+# Request rate per second
+rate(grpc_server_requests_total[1m])
+
+# Error rate
+rate(grpc_server_errors_total[1m]) / rate(grpc_server_requests_total[1m])
+
+# P99 latency
+histogram_quantile(0.99, rate(grpc_server_request_duration_seconds_bucket[5m]))
+
+# P50 latency
+histogram_quantile(0.50, rate(grpc_server_request_duration_seconds_bucket[5m]))
+
+# Request rate by method
+sum(rate(grpc_server_requests_total[1m])) by (method)
+
+# Current active requests
+grpc_server_active_requests
+
+# Average message size
+rate(grpc_server_message_sent_bytes_sum[5m]) / rate(grpc_server_message_sent_bytes_count[5m])
+```
+
+**Grafana Dashboard:**
+
+```json
+{
+  "title": "gRPC Server Metrics",
+  "panels": [
+    {
+      "title": "Request Rate",
+      "targets": [
+        {"expr": "rate(grpc_server_requests_total[1m])"}
+      ]
+    },
+    {
+      "title": "Latency (P50, P95, P99)",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, rate(grpc_server_request_duration_seconds_bucket[5m]))"},
+        {"expr": "histogram_quantile(0.95, rate(grpc_server_request_duration_seconds_bucket[5m]))"},
+        {"expr": "histogram_quantile(0.99, rate(grpc_server_request_duration_seconds_bucket[5m]))"}
+      ]
+    },
+    {
+      "title": "Error Rate",
+      "targets": [
+        {"expr": "rate(grpc_server_errors_total[1m])"}
+      ]
+    }
+  ]
+}
+```
+
 ## Performance Benchmarks
 
 Benchmarks on Intel Xeon E5-2680 v4 @ 2.40GHz, 64GB RAM:
@@ -610,9 +749,12 @@ grpc-guardian/
 │   ├── auth/                     # Authentication utilities
 │   ├── ratelimit/                # Rate limiting algorithms
 │   ├── logging/                  # Logging utilities
-│   └── tracing/                  # ✨ NEW: Distributed tracing utilities
-│       ├── jaeger.go             # Jaeger exporter configuration
-│       └── config.go             # Tracing configuration
+│   ├── tracing/                  # Distributed tracing utilities
+│   │   ├── jaeger.go             # Jaeger exporter configuration
+│   │   └── config.go             # Tracing configuration
+│   └── metrics/                  # ✨ NEW: Metrics collection
+│       ├── types.go              # Metrics types and interfaces
+│       └── prometheus.go         # Prometheus collector implementation
 ├── examples/
 │   ├── simple-server/            # Basic usage example
 │   ├── chaos-demo/               # Chaos engineering demo
@@ -620,7 +762,8 @@ grpc-guardian/
 │   ├── resilience-demo/          # Full resilience stack
 │   ├── retry-demo/               # Retry middleware demo
 │   ├── timeout-demo/             # Timeout middleware demo
-│   ├── tracing-demo/             # ✨ NEW: Distributed tracing demo
+│   ├── tracing-demo/             # Distributed tracing demo
+│   ├── metrics-demo/             # ✨ NEW: Prometheus metrics demo
 │   ├── auth-example/             # Authentication example
 │   └── benchmark/                # Performance benchmarks
 ├── chain.go                       # Middleware chain implementation
@@ -642,6 +785,16 @@ tp, _ := tracing.InitJaeger(
 )
 defer tracing.Shutdown(context.Background(), tp)
 
+// Initialize Prometheus metrics
+metricsCollector, _ := metrics.NewPrometheusCollector(
+    metrics.WithNamespace("myapp"),
+    metrics.WithSubsystem("grpc"),
+    metrics.WithConstLabels(map[string]string{
+        "service": "production-service",
+        "version": "1.0.0",
+    }),
+)
+
 // Full production setup with all features
 chain := guardian.NewChain(
     // Request logging
@@ -654,6 +807,9 @@ chain := guardian.NewChain(
         middleware.WithRecordErrors(),
         middleware.WithRecordEvents(),
     ),
+
+    // Prometheus metrics
+    middleware.MetricsMiddleware(metricsCollector),
 
     // JWT authentication
     middleware.Auth(
@@ -672,9 +828,6 @@ chain := guardian.NewChain(
         circuitbreaker.WithTimeout(30*time.Second),
     ),
 
-    // Metrics collection
-    middleware.Metrics(),
-
     // Request timeout with per-method configuration
     middleware.Timeout(
         middleware.WithTimeout(10*time.Second),
@@ -684,6 +837,13 @@ chain := guardian.NewChain(
         }),
     ),
 )
+
+// Expose Prometheus metrics endpoint
+http.Handle("/metrics", promhttp.HandlerFor(
+    metricsCollector.GetRegistry(),
+    promhttp.HandlerOpts{EnableOpenMetrics: true},
+))
+go http.ListenAndServe(":9090", nil)
 ```
 
 ### Example 2: Testing with Chaos
@@ -859,7 +1019,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 - [x] **Retry middleware with exponential backoff** - ✅ Implemented!
 - [x] **Timeout middleware** - ✅ Implemented!
 - [x] **Distributed Tracing (OpenTelemetry + Jaeger)** - ✅ Implemented!
-- [ ] Metrics collection (Prometheus)
+- [x] **Metrics collection (Prometheus)** - ✅ Implemented!
 - [ ] Advanced circuit breaker patterns
 - [ ] Service mesh integration (Istio, Linkerd)
 
