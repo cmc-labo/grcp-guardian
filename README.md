@@ -707,6 +707,296 @@ rate(grpc_server_message_sent_bytes_sum[5m]) / rate(grpc_server_message_sent_byt
 }
 ```
 
+### Service Mesh Integration ✨ NEW!
+
+```go
+import (
+    "github.com/grpc-guardian/grpc-guardian/middleware"
+    "github.com/grpc-guardian/grpc-guardian/pkg/servicemesh"
+)
+
+// Istio Integration
+istioMiddleware, err := middleware.Istio(
+    &servicemesh.Config{
+        ServiceName:            "my-service",
+        Namespace:              "production",
+        EnableMTLS:             true,
+        EnableTrafficSplitting: true,
+        CustomHeaders: []string{
+            "x-user-id",
+            "x-session-id",
+        },
+    },
+    middleware.WithHeaderPropagation(),
+    middleware.WithMTLSValidation(),
+    middleware.WithMetadataLogging(),
+    middleware.WithMetadataCallback(func(metadata *servicemesh.MeshMetadata) {
+        log.Printf("Request from %s/%s", metadata.SourceNamespace, metadata.SourceWorkload)
+    }),
+)
+
+// Linkerd Integration
+linkerdMiddleware, err := middleware.Linkerd(
+    &servicemesh.Config{
+        ServiceName: "my-service",
+        Namespace:   "production",
+        EnableMTLS:  true,
+    },
+    middleware.WithHeaderPropagation(),
+    middleware.WithMTLSValidation(),
+)
+
+// Simple setup (recommended for most use cases)
+istioMiddleware, _ := middleware.IstioSimple("my-service", "production")
+linkerdMiddleware, _ := middleware.LinkerdSimple("my-service", "production")
+
+// Use in gRPC server
+server := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(
+        middleware.Logging(),
+        istioMiddleware.UnaryServerInterceptor(),  // or linkerdMiddleware
+        middleware.Tracing(),
+    ),
+)
+
+// Use in gRPC client
+conn, _ := grpc.Dial(
+    "other-service:50051",
+    grpc.WithUnaryInterceptor(istioMiddleware.UnaryClientInterceptor()),
+)
+```
+
+**Features:**
+
+**Istio Integration:**
+- ✓ Automatic header propagation (x-request-id, x-b3-traceid, x-b3-spanid, etc.)
+- ✓ Envoy metadata extraction and parsing
+- ✓ mTLS validation with SPIFFE ID verification
+- ✓ Traffic splitting via VirtualService
+- ✓ Fault injection integration
+- ✓ Service discovery via Pilot/Istiod
+- ✓ Metrics reporting to Istio telemetry
+
+**Linkerd Integration:**
+- ✓ Automatic header propagation (l5d-ctx-*, l5d-dst-override, etc.)
+- ✓ Linkerd identity validation
+- ✓ mTLS with Linkerd certificates
+- ✓ Traffic splitting via SMI TrafficSplit
+- ✓ ServiceProfile integration
+- ✓ Tap API support
+- ✓ Per-route metrics
+
+**Common Features:**
+- Distributed tracing context propagation
+- Service-to-service authentication
+- Request metadata extraction and injection
+- Custom header propagation
+- Error handling with mesh-aware retry policies
+- Metrics collection and reporting
+
+**Deployment Example (Istio):**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  ports:
+  - port: 50051
+    name: grpc
+  selector:
+    app: my-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-service
+  template:
+    metadata:
+      labels:
+        app: my-service
+        version: v1
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: my-service
+        image: my-service:latest
+        ports:
+        - containerPort: 50051
+        env:
+        - name: MESH_PROVIDER
+          value: "istio"
+        - name: ENABLE_MTLS
+          value: "true"
+---
+# Istio VirtualService for traffic splitting
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  hosts:
+  - my-service
+  http:
+  - match:
+    - headers:
+        x-canary:
+          exact: "true"
+    route:
+    - destination:
+        host: my-service
+        subset: v2
+  - route:
+    - destination:
+        host: my-service
+        subset: v1
+      weight: 90
+    - destination:
+        host: my-service
+        subset: v2
+      weight: 10
+---
+# Istio DestinationRule with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  host: my-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+```
+
+**Deployment Example (Linkerd):**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  ports:
+  - port: 50051
+    name: grpc
+  selector:
+    app: my-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service
+  namespace: production
+  annotations:
+    linkerd.io/inject: enabled
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-service
+  template:
+    metadata:
+      labels:
+        app: my-service
+    spec:
+      containers:
+      - name: my-service
+        image: my-service:latest
+        ports:
+        - containerPort: 50051
+        env:
+        - name: MESH_PROVIDER
+          value: "linkerd"
+---
+# Linkerd ServiceProfile for retries and timeouts
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: my-service.production.svc.cluster.local
+  namespace: production
+spec:
+  routes:
+  - name: SayHello
+    condition:
+      method: POST
+      pathRegex: /.*SayHello
+    isRetryable: true
+    timeout: 10s
+---
+# SMI TrafficSplit for canary deployment
+apiVersion: split.smi-spec.io/v1alpha1
+kind: TrafficSplit
+metadata:
+  name: my-service
+  namespace: production
+spec:
+  service: my-service
+  backends:
+  - service: my-service-v1
+    weight: 90
+  - service: my-service-v2
+    weight: 10
+```
+
+**Header Propagation:**
+
+The service mesh middleware automatically propagates trace context and service mesh headers:
+
+| Mesh | Headers Propagated |
+|------|-------------------|
+| **Istio** | x-request-id, x-b3-traceid, x-b3-spanid, x-b3-parentspanid, x-b3-sampled, x-envoy-* |
+| **Linkerd** | l5d-ctx-trace, l5d-ctx-traceid, l5d-ctx-spanid, l5d-ctx-parentid, l5d-dst-override, l5d-dtab |
+
+**Testing Service Mesh Integration:**
+
+```bash
+# Install Istio
+curl -L https://istio.io/downloadIstio | sh -
+istioctl install --set profile=demo -y
+
+# Enable Istio injection
+kubectl label namespace default istio-injection=enabled
+
+# Deploy your service
+kubectl apply -f deployment.yaml
+
+# Check Istio proxy status
+istioctl proxy-status
+
+# View Istio metrics
+kubectl port-forward -n istio-system svc/prometheus 9090:9090
+
+# Install Linkerd
+curl -fsL https://run.linkerd.io/install | sh
+linkerd install | kubectl apply -f -
+
+# Enable Linkerd injection
+kubectl annotate ns default linkerd.io/inject=enabled
+
+# Check Linkerd status
+linkerd check
+linkerd dashboard
+```
+
 ## Performance Benchmarks
 
 Benchmarks on Intel Xeon E5-2680 v4 @ 2.40GHz, 64GB RAM:
@@ -734,8 +1024,10 @@ grpc-guardian/
 │   ├── retry_test.go             # Retry tests
 │   ├── timeout.go                # Timeout middleware
 │   ├── timeout_test.go           # Timeout tests
-│   ├── tracing.go                # ✨ NEW: Distributed tracing middleware
-│   └── tracing_test.go           # ✨ NEW: Tracing tests
+│   ├── tracing.go                # Distributed tracing middleware
+│   ├── tracing_test.go           # Tracing tests
+│   ├── servicemesh.go            # ✨ NEW: Service mesh integration middleware
+│   └── servicemesh_test.go       # ✨ NEW: Service mesh tests
 ├── chaos/                         # Chaos engineering features
 │   ├── latency.go                # Latency injection
 │   ├── error.go                  # Error injection
@@ -752,9 +1044,13 @@ grpc-guardian/
 │   ├── tracing/                  # Distributed tracing utilities
 │   │   ├── jaeger.go             # Jaeger exporter configuration
 │   │   └── config.go             # Tracing configuration
-│   └── metrics/                  # ✨ NEW: Metrics collection
-│       ├── types.go              # Metrics types and interfaces
-│       └── prometheus.go         # Prometheus collector implementation
+│   ├── metrics/                  # Metrics collection
+│   │   ├── types.go              # Metrics types and interfaces
+│   │   └── prometheus.go         # Prometheus collector implementation
+│   └── servicemesh/              # ✨ NEW: Service mesh integration
+│       ├── types.go              # Common service mesh types and interfaces
+│       ├── istio.go              # Istio service mesh integration
+│       └── linkerd.go            # Linkerd service mesh integration
 ├── examples/
 │   ├── simple-server/            # Basic usage example
 │   ├── chaos-demo/               # Chaos engineering demo
@@ -763,7 +1059,8 @@ grpc-guardian/
 │   ├── retry-demo/               # Retry middleware demo
 │   ├── timeout-demo/             # Timeout middleware demo
 │   ├── tracing-demo/             # Distributed tracing demo
-│   ├── metrics-demo/             # ✨ NEW: Prometheus metrics demo
+│   ├── metrics-demo/             # Prometheus metrics demo
+│   ├── servicemesh-demo/         # ✨ NEW: Service mesh integration demo (Istio/Linkerd)
 │   ├── auth-example/             # Authentication example
 │   └── benchmark/                # Performance benchmarks
 ├── chain.go                       # Middleware chain implementation
@@ -1015,13 +1312,21 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for det
 - [x] Chaos engineering features
 - [x] **Circuit Breaker pattern** - ✅ Implemented!
 
-### v1.1 (In Progress)
+### v1.1 (Completed)
 - [x] **Retry middleware with exponential backoff** - ✅ Implemented!
 - [x] **Timeout middleware** - ✅ Implemented!
 - [x] **Distributed Tracing (OpenTelemetry + Jaeger)** - ✅ Implemented!
 - [x] **Metrics collection (Prometheus)** - ✅ Implemented!
+- [x] **Service mesh integration (Istio, Linkerd)** - ✅ Implemented!
+  - Automatic header propagation (trace context, request IDs)
+  - mTLS validation with SPIFFE ID and Linkerd identity verification
+  - Traffic splitting support
+  - Mesh-aware retry policies
+  - Integration with Istio VirtualService and Linkerd ServiceProfile
+
+### v1.2 (Future)
 - [ ] Advanced circuit breaker patterns
-- [ ] Service mesh integration (Istio, Linkerd)
+- [ ] Service mesh gateway mode (standalone proxy)
 
 ### v2.0 (Future)
 - [ ] GUI dashboard for chaos testing
