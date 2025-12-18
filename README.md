@@ -26,19 +26,27 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 - **Prometheus Metrics**: Request rate, latency, errors, active requests ✨ NEW!
 - **Distributed Tracing**: Full OpenTelemetry + Jaeger integration
 
-#### 3. Rate Limiting
+#### 3. Response Caching ✨ NEW!
+- **In-Memory Caching**: Fast in-memory cache backend
+- **TTL Support**: Configurable time-to-live for cache entries
+- **Per-Method TTL**: Custom TTL for specific methods
+- **Cache Key Strategies**: Flexible key generation (default, simple, custom)
+- **Cache Statistics**: Hit rate, miss rate, evictions tracking
+- **LRU Eviction**: Automatic eviction of least recently used entries
+
+#### 4. Rate Limiting
 - **Token Bucket Algorithm**: Industry-standard rate limiting
 - **Per-Client Limits**: IP or user-based rate limits
 - **Adaptive Rate Limiting**: Dynamic adjustment based on load
 - **Quota Management**: Request quota enforcement
 
-#### 4. Resilience & Fault Tolerance
+#### 5. Resilience & Fault Tolerance
 - **Retry Logic**: Automatic retry with exponential backoff
 - **Circuit Breaking**: Automatic failure detection and recovery
 - **Timeout Control**: Request timeout management with per-method configuration
 - **Bulkhead Isolation**: Resource isolation between services
 
-#### 5. Chaos Engineering
+#### 6. Chaos Engineering
 - **Latency Injection**: Simulate network delays
 - **Error Injection**: Random error responses
 - **Timeout Simulation**: Test timeout handling
@@ -193,6 +201,91 @@ chain := guardian.NewChain(
 )
 ```
 
+### Response Caching Example ✨ NEW!
+
+```go
+import (
+    guardian "github.com/grpc-guardian/grpc-guardian"
+    "github.com/grpc-guardian/grpc-guardian/middleware"
+    "github.com/grpc-guardian/grpc-guardian/pkg/cache"
+)
+
+func main() {
+    // Create cache backend
+    cacheBackend := cache.NewMemoryBackend(&cache.MemoryConfig{
+        MaxSize:         1000,              // Maximum 1000 cached entries
+        CleanupInterval: 5 * time.Minute,   // Clean expired entries every 5 min
+    })
+
+    // Create middleware chain with caching
+    chain := guardian.NewChain(
+        middleware.Logging(),
+        middleware.Cache(
+            middleware.WithCacheBackend(cacheBackend),
+            middleware.WithTTL(5*time.Minute),  // Default 5 minute TTL
+            middleware.WithMethodTTL("/api.UserService/GetProfile", 10*time.Minute),  // Custom TTL
+            middleware.WithSkipMethod("/api.UserService/UpdateProfile"),  // Don't cache mutations
+            middleware.WithCacheErrors(),  // Cache error responses too
+        ),
+    )
+
+    // Create gRPC server
+    server := grpc.NewServer(
+        grpc.UnaryInterceptor(chain.UnaryInterceptor()),
+    )
+
+    // Your service will now have responses cached!
+}
+```
+
+#### Advanced Caching Features
+
+```go
+// Custom cache key generation
+customKeyGen := cache.NewCustomKeyGenerator(func(method string, req interface{}) (string, error) {
+    // Generate key based on user ID from request
+    userReq := req.(*UserRequest)
+    return fmt.Sprintf("%s:user:%d", method, userReq.UserId), nil
+})
+
+middleware.Cache(
+    middleware.WithKeyGenerator(customKeyGen),
+)
+
+// Method-specific key generation
+methodKeyGen := cache.NewMethodKeyGenerator(cache.NewDefaultKeyGenerator())
+methodKeyGen.RegisterMethod("/api.UserService/GetProfile", cache.NewSimpleKeyGenerator())
+
+// Cache invalidation
+ctx := context.Background()
+err := middleware.InvalidateCache(ctx, cacheBackend, "/api.UserService/GetProfile", req)
+
+// Clear all cache
+err := middleware.ClearCache(ctx, cacheBackend)
+
+// Get cache statistics
+stats := middleware.GetCacheStats(cacheBackend)
+fmt.Printf("Hit Rate: %.2f%%\n", stats.HitRate * 100)
+fmt.Printf("Cache Size: %d/%d\n", stats.Size, stats.MaxSize)
+fmt.Printf("Evictions: %d\n", stats.Evictions)
+```
+
+#### Cache Performance Benefits
+
+```go
+// Without cache: Every request hits database/backend
+// Request 1: 200ms (database query)
+// Request 2: 200ms (database query)
+// Request 3: 200ms (database query)
+// Total: 600ms
+
+// With cache: Only first request hits database
+// Request 1: 200ms (database query + cache set)
+// Request 2: <1ms (from cache)
+// Request 3: <1ms (from cache)
+// Total: ~202ms (3x faster!)
+```
+
 ### Custom Middleware
 
 ```go
@@ -330,6 +423,77 @@ middleware.RateLimitPerMethod(map[string]ratelimit.Config{
     "/api.Service/ExpensiveMethod": {Rate: 10, Burst: 2},
     "/api.Service/CheapMethod":     {Rate: 1000, Burst: 50},
 })
+```
+
+### Caching Middleware ✨ NEW!
+
+```go
+import "github.com/grpc-guardian/grpc-guardian/pkg/cache"
+
+// Basic caching with default settings
+middleware.Cache()
+
+// Custom configuration
+cacheBackend := cache.NewMemoryBackend(&cache.MemoryConfig{
+    MaxSize:         1000,
+    CleanupInterval: 5 * time.Minute,
+})
+
+middleware.Cache(
+    middleware.WithCacheBackend(cacheBackend),
+    middleware.WithTTL(5*time.Minute),  // Default TTL
+)
+
+// Per-method TTL
+middleware.Cache(
+    middleware.WithTTL(5*time.Minute),
+    middleware.WithMethodTTL("/api.Service/GetUser", 10*time.Minute),
+    middleware.WithMethodTTL("/api.Service/GetConfig", 1*time.Hour),
+)
+
+// Skip specific methods (e.g., mutations)
+middleware.Cache(
+    middleware.WithSkipMethod("/api.Service/CreateUser"),
+    middleware.WithSkipMethod("/api.Service/UpdateUser"),
+    middleware.WithSkipMethod("/api.Service/DeleteUser"),
+)
+
+// Only cache specific methods
+middleware.Cache(
+    middleware.WithOnlyMethod("/api.Service/GetUser"),
+    middleware.WithOnlyMethod("/api.Service/ListUsers"),
+)
+
+// Cache error responses
+middleware.Cache(
+    middleware.WithCacheErrors(),
+)
+
+// Custom key generation
+customKeyGen := cache.NewCustomKeyGenerator(func(method string, req interface{}) (string, error) {
+    // Your custom key logic
+    return fmt.Sprintf("%s:%v", method, req), nil
+})
+
+middleware.Cache(
+    middleware.WithKeyGenerator(customKeyGen),
+)
+```
+
+#### Cache Management
+
+```go
+// Invalidate specific cache entry
+ctx := context.Background()
+err := middleware.InvalidateCache(ctx, cacheBackend, methodName, request)
+
+// Clear all cache
+err := middleware.ClearCache(ctx, cacheBackend)
+
+// Get cache statistics
+stats := middleware.GetCacheStats(cacheBackend)
+fmt.Printf("Hits: %d, Misses: %d, Hit Rate: %.2f%%\n",
+    stats.Hits, stats.Misses, stats.HitRate*100)
 ```
 
 ### Timeout Middleware
