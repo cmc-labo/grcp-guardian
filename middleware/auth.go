@@ -16,18 +16,34 @@ import (
 type AuthValidator func(ctx context.Context, token string) (context.Context, error)
 
 // Auth creates an authentication middleware with the provided validator
+//
+// Example usage:
+//
+//	// JWT authentication
+//	chain := guardian.NewChain(
+//	    middleware.Auth(middleware.JWTValidator("your-secret-key")),
+//	)
+//
+//	// API key authentication
+//	chain := guardian.NewChain(
+//	    middleware.Auth(middleware.APIKeyValidator(func(key string) bool {
+//	        return key == "valid-api-key"
+//	    })),
+//	)
 func Auth(validator AuthValidator) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		// Extract token from metadata
 		token, err := extractToken(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "missing or invalid authentication token: %v", err)
+			return nil, status.Errorf(codes.Unauthenticated,
+				"missing or invalid authentication token: %v\nHint: Include 'authorization: Bearer <token>' or 'x-api-key: <key>' in gRPC metadata", err)
 		}
 
 		// Validate token
 		ctx, err = validator(ctx, token)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "authentication failed: %v", err)
+			return nil, status.Errorf(codes.Unauthenticated,
+				"authentication failed: %v\nHint: Verify token format, expiration, and signing key", err)
 		}
 
 		// Call next handler
@@ -115,7 +131,10 @@ func RequireRole(requiredRoles ...string) func(ctx context.Context, req interfac
 		// Get roles from context
 		roles, ok := ctx.Value("roles").([]string)
 		if !ok {
-			return nil, status.Errorf(codes.PermissionDenied, "no roles found in context")
+			return nil, status.Error(codes.PermissionDenied,
+				"no roles found in context\n"+
+				"Hint: Ensure user is authenticated with a JWT token containing 'roles' claim, "+
+				"or use RequireRole middleware after Auth middleware")
 		}
 
 		// Check if user has required role
@@ -133,7 +152,8 @@ func RequireRole(requiredRoles ...string) func(ctx context.Context, req interfac
 		}
 
 		if !hasRole {
-			return nil, status.Errorf(codes.PermissionDenied, "insufficient permissions")
+			return nil, status.Errorf(codes.PermissionDenied,
+				"insufficient permissions: requires one of %v, user has %v", requiredRoles, roles)
 		}
 
 		return handler(ctx, req)
@@ -177,4 +197,39 @@ func GetUserID(ctx context.Context) (string, bool) {
 func GetRoles(ctx context.Context) ([]string, bool) {
 	roles, ok := ctx.Value("roles").([]string)
 	return roles, ok
+}
+
+// Error helper functions for better error messages
+
+// ErrMissingToken creates a detailed error for missing authentication tokens
+func ErrMissingToken() error {
+	return status.Error(codes.Unauthenticated,
+		"authentication token not found\n"+
+			"Hint: Include one of the following in gRPC metadata:\n"+
+			"  - 'authorization: Bearer <jwt-token>'\n"+
+			"  - 'x-api-key: <api-key>'")
+}
+
+// ErrInvalidToken creates a detailed error for invalid tokens
+func ErrInvalidToken(reason string) error {
+	return status.Errorf(codes.Unauthenticated,
+		"authentication token is invalid: %s\n"+
+			"Hint: Verify token format, expiration, and signing key", reason)
+}
+
+// ErrInsufficientPermissions creates a detailed error for permission denials
+func ErrInsufficientPermissions(required, actual []string) error {
+	return status.Errorf(codes.PermissionDenied,
+		"insufficient permissions\n"+
+			"Required: %v\n"+
+			"Actual: %v\n"+
+			"Hint: Contact your administrator to request the required roles", required, actual)
+}
+
+// ErrNoRolesInContext creates a detailed error for missing roles in context
+func ErrNoRolesInContext() error {
+	return status.Error(codes.PermissionDenied,
+		"no roles found in context\n"+
+			"Hint: Ensure Auth middleware is applied before RequireRole middleware\n"+
+			"Example: guardian.NewChain(middleware.Auth(...), middleware.RequireRole(...))")
 }
