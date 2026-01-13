@@ -2,8 +2,14 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc"
@@ -125,6 +131,157 @@ func BasicAuthValidator(username, password string) AuthValidator {
 	}
 }
 
+// OAuth2Config holds the configuration for OAuth 2.0 token introspection
+type OAuth2Config struct {
+	// IntrospectionURL is the OAuth 2.0 introspection endpoint (RFC 7662)
+	IntrospectionURL string
+
+	// ClientID is the client identifier for introspection authentication
+	ClientID string
+
+	// ClientSecret is the client secret for introspection authentication
+	ClientSecret string
+
+	// HTTPClient is the HTTP client to use for introspection requests
+	// If nil, http.DefaultClient will be used
+	HTTPClient *http.Client
+
+	// Timeout is the timeout for introspection requests
+	// Default: 5 seconds
+	Timeout time.Duration
+}
+
+// oauth2IntrospectionResponse represents the response from an OAuth 2.0 introspection endpoint
+// as defined in RFC 7662
+type oauth2IntrospectionResponse struct {
+	// Active indicates whether the token is currently active
+	Active bool `json:"active"`
+
+	// Scope is a space-separated list of scopes associated with the token
+	Scope string `json:"scope,omitempty"`
+
+	// ClientID is the client identifier for the OAuth 2.0 client
+	ClientID string `json:"client_id,omitempty"`
+
+	// Username is the human-readable identifier for the resource owner
+	Username string `json:"username,omitempty"`
+
+	// TokenType is the type of the token (e.g., "Bearer")
+	TokenType string `json:"token_type,omitempty"`
+
+	// Exp is the expiration timestamp (seconds since epoch)
+	Exp int64 `json:"exp,omitempty"`
+
+	// Iat is the issued-at timestamp (seconds since epoch)
+	Iat int64 `json:"iat,omitempty"`
+
+	// Nbf is the not-before timestamp (seconds since epoch)
+	Nbf int64 `json:"nbf,omitempty"`
+
+	// Sub is the subject of the token (usually user ID)
+	Sub string `json:"sub,omitempty"`
+
+	// Aud is the intended audience of the token
+	Aud string `json:"aud,omitempty"`
+
+	// Iss is the issuer of the token
+	Iss string `json:"iss,omitempty"`
+
+	// Jti is the unique identifier for the token
+	Jti string `json:"jti,omitempty"`
+}
+
+// OAuth2Validator creates an OAuth 2.0 token validator using introspection endpoint
+//
+// This validator implements RFC 7662 (OAuth 2.0 Token Introspection).
+// It validates access tokens by calling the introspection endpoint of the OAuth 2.0 provider.
+//
+// Example usage:
+//
+//	config := middleware.OAuth2Config{
+//	    IntrospectionURL: "https://oauth-provider.com/introspect",
+//	    ClientID:         "my-client-id",
+//	    ClientSecret:     "my-client-secret",
+//	    Timeout:          5 * time.Second,
+//	}
+//	chain := guardian.NewChain(
+//	    middleware.Auth(middleware.OAuth2Validator(config)),
+//	)
+func OAuth2Validator(config OAuth2Config) AuthValidator {
+	// Set defaults
+	if config.HTTPClient == nil {
+		config.HTTPClient = http.DefaultClient
+	}
+	if config.Timeout == 0 {
+		config.Timeout = 5 * time.Second
+	}
+
+	return func(ctx context.Context, token string) (context.Context, error) {
+		// Create introspection request
+		data := url.Values{}
+		data.Set("token", token)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", config.IntrospectionURL, strings.NewReader(data.Encode()))
+		if err != nil {
+			return ctx, fmt.Errorf("failed to create introspection request: %w", err)
+		}
+
+		// Set headers
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(config.ClientID, config.ClientSecret)
+
+		// Apply timeout
+		reqCtx, cancel := context.WithTimeout(ctx, config.Timeout)
+		defer cancel()
+		req = req.WithContext(reqCtx)
+
+		// Send introspection request
+		resp, err := config.HTTPClient.Do(req)
+		if err != nil {
+			return ctx, fmt.Errorf("introspection request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		// Check HTTP status
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return ctx, fmt.Errorf("introspection endpoint returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Parse introspection response
+		var introspectionResp oauth2IntrospectionResponse
+		if err := json.NewDecoder(resp.Body).Decode(&introspectionResp); err != nil {
+			return ctx, fmt.Errorf("failed to parse introspection response: %w", err)
+		}
+
+		// Check if token is active
+		if !introspectionResp.Active {
+			return ctx, errors.New("token is not active")
+		}
+
+		// Add claims to context
+		if introspectionResp.Sub != "" {
+			ctx = context.WithValue(ctx, "user_id", introspectionResp.Sub)
+		}
+		if introspectionResp.Username != "" {
+			ctx = context.WithValue(ctx, "username", introspectionResp.Username)
+		}
+		if introspectionResp.ClientID != "" {
+			ctx = context.WithValue(ctx, "client_id", introspectionResp.ClientID)
+		}
+		if introspectionResp.Scope != "" {
+			// Split space-separated scopes into array
+			scopes := strings.Fields(introspectionResp.Scope)
+			ctx = context.WithValue(ctx, "scopes", scopes)
+		}
+
+		// Store full introspection response in context for advanced use cases
+		ctx = context.WithValue(ctx, "oauth2_introspection", introspectionResp)
+
+		return ctx, nil
+	}
+}
+
 // RequireRole creates middleware that requires specific roles
 func RequireRole(requiredRoles ...string) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
@@ -154,6 +311,41 @@ func RequireRole(requiredRoles ...string) func(ctx context.Context, req interfac
 		if !hasRole {
 			return nil, status.Errorf(codes.PermissionDenied,
 				"insufficient permissions: requires one of %v, user has %v", requiredRoles, roles)
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+// RequireScope creates middleware that requires specific OAuth 2.0 scopes
+func RequireScope(requiredScopes ...string) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		// Get scopes from context
+		scopes, ok := ctx.Value("scopes").([]string)
+		if !ok {
+			return nil, status.Error(codes.PermissionDenied,
+				"no scopes found in context\n"+
+					"Hint: Ensure user is authenticated with an OAuth 2.0 token, "+
+					"or use RequireScope middleware after Auth middleware with OAuth2Validator")
+		}
+
+		// Check if user has required scope
+		hasScope := false
+		for _, userScope := range scopes {
+			for _, requiredScope := range requiredScopes {
+				if userScope == requiredScope {
+					hasScope = true
+					break
+				}
+			}
+			if hasScope {
+				break
+			}
+		}
+
+		if !hasScope {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"insufficient permissions: requires one of scopes %v, user has %v", requiredScopes, scopes)
 		}
 
 		return handler(ctx, req)
@@ -197,6 +389,18 @@ func GetUserID(ctx context.Context) (string, bool) {
 func GetRoles(ctx context.Context) ([]string, bool) {
 	roles, ok := ctx.Value("roles").([]string)
 	return roles, ok
+}
+
+// GetScopes retrieves the OAuth 2.0 scopes from context
+func GetScopes(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value("scopes").([]string)
+	return scopes, ok
+}
+
+// GetClientID retrieves the OAuth 2.0 client ID from context
+func GetClientID(ctx context.Context) (string, bool) {
+	clientID, ok := ctx.Value("client_id").(string)
+	return clientID, ok
 }
 
 // Error helper functions for better error messages
