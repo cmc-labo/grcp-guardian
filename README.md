@@ -16,8 +16,11 @@ A powerful, modular middleware library for gRPC microservices with built-in supp
 
 #### 1. Authentication & Authorization
 - **JWT Token Validation**: Automatic JWT token parsing and validation
+- **OAuth 2.0 Token Introspection**: RFC 7662 compliant token validation ✨ NEW!
 - **API Key Authentication**: Simple API key-based auth
+- **Basic Authentication**: Username/password authentication
 - **RBAC Support**: Role-based access control
+- **Scope-Based Authorization**: OAuth 2.0 scope validation ✨ NEW!
 - **Custom Auth Handlers**: Extensible authentication system
 
 #### 2. Logging & Observability
@@ -397,6 +400,21 @@ middleware.Auth(
     }),
 )
 
+// OAuth 2.0 token introspection (RFC 7662)
+middleware.Auth(
+    middleware.OAuth2Validator(middleware.OAuth2Config{
+        IntrospectionURL: "https://oauth-provider.com/introspect",
+        ClientID:         "my-client-id",
+        ClientSecret:     "my-client-secret",
+        Timeout:          5 * time.Second,
+    }),
+)
+
+// Basic authentication
+middleware.Auth(
+    middleware.BasicAuthValidator("username", "password"),
+)
+
 // Custom authentication
 middleware.Auth(
     func(ctx context.Context, req interface{}) error {
@@ -405,6 +423,96 @@ middleware.Auth(
     },
 )
 ```
+
+#### OAuth 2.0 Token Introspection ✨ NEW!
+
+OAuth 2.0 token introspection (RFC 7662) allows you to validate access tokens by calling your OAuth 2.0 provider's introspection endpoint. This is useful for:
+- Validating opaque access tokens
+- Real-time token revocation checking
+- Integrating with Auth0, Keycloak, Okta, etc.
+
+```go
+// Configure OAuth2 validator
+oauth2Config := middleware.OAuth2Config{
+    IntrospectionURL: "https://oauth-provider.com/introspect",
+    ClientID:         "my-service",
+    ClientSecret:     "service-secret",
+    Timeout:          5 * time.Second,
+}
+
+// Use in middleware chain
+chain := guardian.NewChain(
+    middleware.Logging(),
+    middleware.Auth(middleware.OAuth2Validator(oauth2Config)),
+)
+
+// Require specific scopes for methods
+middleware.RequireScope("profile:read")   // Read user profile
+middleware.RequireScope("profile:write")  // Update user profile
+```
+
+**Context Values After OAuth2 Authentication:**
+
+After successful authentication, the following values are added to the context:
+
+```go
+func (s *server) MyMethod(ctx context.Context, req *MyRequest) (*MyResponse, error) {
+    // Get user information from context
+    userID, _ := ctx.Value("user_id").(string)          // Subject (sub)
+    username, _ := ctx.Value("username").(string)       // Username
+    clientID, _ := middleware.GetClientID(ctx)          // OAuth2 client ID
+    scopes, _ := middleware.GetScopes(ctx)              // Granted scopes
+
+    log.Printf("Request from user=%s, scopes=%v", username, scopes)
+    return &MyResponse{}, nil
+}
+```
+
+**Scope-Based Authorization:**
+
+```go
+// Create middleware requiring specific scopes
+readScope := middleware.RequireScope("resource:read")
+writeScope := middleware.RequireScope("resource:write")
+adminScope := middleware.RequireScope("admin")
+
+// Use in gRPC server with per-method middleware
+server := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(
+        // Global auth
+        middleware.Auth(middleware.OAuth2Validator(oauth2Config)),
+        // Per-method scope check
+        readScope,
+    ),
+)
+```
+
+**Production OAuth2 Providers:**
+
+```go
+// Auth0
+oauth2Config := middleware.OAuth2Config{
+    IntrospectionURL: "https://YOUR_DOMAIN.auth0.com/oauth/token/introspect",
+    ClientID:         "YOUR_CLIENT_ID",
+    ClientSecret:     "YOUR_CLIENT_SECRET",
+}
+
+// Keycloak
+oauth2Config := middleware.OAuth2Config{
+    IntrospectionURL: "https://keycloak.example.com/auth/realms/YOUR_REALM/protocol/openid-connect/token/introspect",
+    ClientID:         "YOUR_CLIENT_ID",
+    ClientSecret:     "YOUR_CLIENT_SECRET",
+}
+
+// Okta
+oauth2Config := middleware.OAuth2Config{
+    IntrospectionURL: "https://YOUR_DOMAIN.okta.com/oauth2/default/v1/introspect",
+    ClientID:         "YOUR_CLIENT_ID",
+    ClientSecret:     "YOUR_CLIENT_SECRET",
+}
+```
+
+**See also:** [examples/oauth2-demo](examples/oauth2-demo) for a complete working example
 
 ### Rate Limiting Middleware
 
@@ -1225,6 +1333,7 @@ grpc-guardian/
 │   ├── tracing-demo/             # Distributed tracing demo
 │   ├── metrics-demo/             # Prometheus metrics demo
 │   ├── servicemesh-demo/         # ✨ NEW: Service mesh integration demo (Istio/Linkerd)
+│   ├── oauth2-demo/              # ✨ NEW: OAuth 2.0 authentication demo
 │   ├── auth-example/             # Authentication example
 │   └── benchmark/                # Performance benchmarks
 ├── chain.go                       # Middleware chain implementation

@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package user;
+
+option go_package = "github.com/grpc-guardian/grpc-guardian/examples/oauth2-demo/proto";
+
+// UserService provides user profile management with OAuth2 authentication
+service UserService {
+  // GetProfile retrieves a user profile
+  // Requires: profile:read scope
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+
+  // UpdateProfile updates a user profile
+  // Requires: profile:write scope
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // ListUsers lists all users
+  // Requires: users:read scope
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}
+
+message GetProfileRequest {
+  string user_id = 1;
+}
+
+message GetProfileResponse {
+  string user_id = 1;
+  string username = 2;
+  string email = 3;
+  repeated string scopes = 4;
+}
+
+message UpdateProfileRequest {
+  string user_id = 1;
+  string username = 2;
+  string email = 3;
+}
+
+message UpdateProfileResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListUsersRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message User {
+  string user_id = 1;
+  string username = 2;
+  string email = 3;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  int32 total = 2;
+}
