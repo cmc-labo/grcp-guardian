@@ -245,9 +245,8 @@ func (a *AdaptiveRateLimiter) AdjustRate(loadFactor float64) {
 	a.limiter.SetLimit(newRate)
 }
 
-// Allow checks if a request is allowed
+// Allow checks if a request is allowed.
+// rate.Limiter is safe for concurrent use; no external lock is needed here.
 func (a *AdaptiveRateLimiter) Allow() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	return a.limiter.Allow()
 }

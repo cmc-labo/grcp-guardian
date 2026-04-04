@@ -18,6 +18,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// contextKey is an unexported type for context keys used by this package.
+// Using a named type instead of a plain string prevents key collisions with
+// other packages that also store values in the same context.
+type contextKey string
+
+const (
+	contextKeyUserID  contextKey = "user_id"
+	contextKeyRoles   contextKey = "roles"
+	contextKeyAPIKey  contextKey = "api_key"
+	contextKeyUsername contextKey = "username"
+	contextKeyClientID contextKey = "client_id"
+	contextKeyScopes  contextKey = "scopes"
+	contextKeyOAuth2  contextKey = "oauth2_introspection"
+)
+
 // AuthValidator defines the interface for authentication validation
 type AuthValidator func(ctx context.Context, token string) (context.Context, error)
 
@@ -81,7 +96,7 @@ func JWTValidator(secret string) AuthValidator {
 		if claims, ok := token.Claims.(jwt.MapClaims); ok {
 			// Add user ID to context
 			if userID, ok := claims["sub"].(string); ok {
-				ctx = context.WithValue(ctx, "user_id", userID)
+				ctx = context.WithValue(ctx, contextKeyUserID, userID)
 			}
 
 			// Add roles to context
@@ -92,7 +107,7 @@ func JWTValidator(secret string) AuthValidator {
 						roleStrings[i] = roleStr
 					}
 				}
-				ctx = context.WithValue(ctx, "roles", roleStrings)
+				ctx = context.WithValue(ctx, contextKeyRoles, roleStrings)
 			}
 		}
 
@@ -108,7 +123,7 @@ func APIKeyValidator(isValidKey func(string) bool) AuthValidator {
 		}
 
 		// Add API key to context
-		ctx = context.WithValue(ctx, "api_key", apiKey)
+		ctx = context.WithValue(ctx, contextKeyAPIKey, apiKey)
 		return ctx, nil
 	}
 }
@@ -126,7 +141,7 @@ func BasicAuthValidator(username, password string) AuthValidator {
 			return ctx, errors.New("invalid credentials")
 		}
 
-		ctx = context.WithValue(ctx, "username", username)
+		ctx = context.WithValue(ctx, contextKeyUsername, username)
 		return ctx, nil
 	}
 }
@@ -261,22 +276,22 @@ func OAuth2Validator(config OAuth2Config) AuthValidator {
 
 		// Add claims to context
 		if introspectionResp.Sub != "" {
-			ctx = context.WithValue(ctx, "user_id", introspectionResp.Sub)
+			ctx = context.WithValue(ctx, contextKeyUserID, introspectionResp.Sub)
 		}
 		if introspectionResp.Username != "" {
-			ctx = context.WithValue(ctx, "username", introspectionResp.Username)
+			ctx = context.WithValue(ctx, contextKeyUsername, introspectionResp.Username)
 		}
 		if introspectionResp.ClientID != "" {
-			ctx = context.WithValue(ctx, "client_id", introspectionResp.ClientID)
+			ctx = context.WithValue(ctx, contextKeyClientID, introspectionResp.ClientID)
 		}
 		if introspectionResp.Scope != "" {
 			// Split space-separated scopes into array
 			scopes := strings.Fields(introspectionResp.Scope)
-			ctx = context.WithValue(ctx, "scopes", scopes)
+			ctx = context.WithValue(ctx, contextKeyScopes, scopes)
 		}
 
 		// Store full introspection response in context for advanced use cases
-		ctx = context.WithValue(ctx, "oauth2_introspection", introspectionResp)
+		ctx = context.WithValue(ctx, contextKeyOAuth2, introspectionResp)
 
 		return ctx, nil
 	}
@@ -286,7 +301,7 @@ func OAuth2Validator(config OAuth2Config) AuthValidator {
 func RequireRole(requiredRoles ...string) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		// Get roles from context
-		roles, ok := ctx.Value("roles").([]string)
+		roles, ok := ctx.Value(contextKeyRoles).([]string)
 		if !ok {
 			return nil, status.Error(codes.PermissionDenied,
 				"no roles found in context\n"+
@@ -321,7 +336,7 @@ func RequireRole(requiredRoles ...string) func(ctx context.Context, req interfac
 func RequireScope(requiredScopes ...string) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		// Get scopes from context
-		scopes, ok := ctx.Value("scopes").([]string)
+		scopes, ok := ctx.Value(contextKeyScopes).([]string)
 		if !ok {
 			return nil, status.Error(codes.PermissionDenied,
 				"no scopes found in context\n"+
@@ -381,25 +396,25 @@ func extractToken(ctx context.Context) (string, error) {
 
 // GetUserID retrieves the user ID from context
 func GetUserID(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value("user_id").(string)
+	userID, ok := ctx.Value(contextKeyUserID).(string)
 	return userID, ok
 }
 
 // GetRoles retrieves the roles from context
 func GetRoles(ctx context.Context) ([]string, bool) {
-	roles, ok := ctx.Value("roles").([]string)
+	roles, ok := ctx.Value(contextKeyRoles).([]string)
 	return roles, ok
 }
 
 // GetScopes retrieves the OAuth 2.0 scopes from context
 func GetScopes(ctx context.Context) ([]string, bool) {
-	scopes, ok := ctx.Value("scopes").([]string)
+	scopes, ok := ctx.Value(contextKeyScopes).([]string)
 	return scopes, ok
 }
 
 // GetClientID retrieves the OAuth 2.0 client ID from context
 func GetClientID(ctx context.Context) (string, bool) {
-	clientID, ok := ctx.Value("client_id").(string)
+	clientID, ok := ctx.Value(contextKeyClientID).(string)
 	return clientID, ok
 }
 
