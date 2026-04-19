@@ -266,6 +266,7 @@ func (cb *CircuitBreaker) currentState(now time.Time) (State, uint64) {
 		// Check if interval has expired, reset counts
 		if cb.interval > 0 && now.Sub(cb.stateChangedAt) > cb.interval {
 			cb.resetCounts()
+			cb.stateChangedAt = now
 		}
 	case StateOpen:
 		// Check if timeout has expired, transition to half-open

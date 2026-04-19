@@ -85,9 +85,6 @@ func New(opts ...ChaosOption) func(ctx context.Context, req interface{}, info *g
 		opt(config)
 	}
 
-	// Initialize random seed
-	rand.Seed(time.Now().UnixNano())
-
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		// Check if chaos is enabled
 		if !config.EnableCondition() {
@@ -125,8 +122,6 @@ func New(opts ...ChaosOption) func(ctx context.Context, req interface{}, info *g
 
 // LatencyInjector creates latency injection middleware
 func LatencyInjector(min, max time.Duration, probability float64) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	rand.Seed(time.Now().UnixNano())
-
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if shouldInject(probability) {
 			delay := randomDuration(min, max)
@@ -144,8 +139,6 @@ func LatencyInjector(min, max time.Duration, probability float64) func(ctx conte
 
 // ErrorInjector creates error injection middleware
 func ErrorInjector(errorCodes []codes.Code, probability float64) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	rand.Seed(time.Now().UnixNano())
-
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if shouldInject(probability) {
 			code := errorCodes[rand.Intn(len(errorCodes))]
@@ -182,8 +175,6 @@ func RandomErrorInjector(probability float64) func(ctx context.Context, req inte
 
 // TimeoutInjector creates timeout injection middleware
 func TimeoutInjector(timeout time.Duration, probability float64) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	rand.Seed(time.Now().UnixNano())
-
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if shouldInject(probability) {
 			newCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -224,8 +215,6 @@ type PercentageBasedChaos struct {
 
 // NewPercentageBasedChaos creates chaos that affects a percentage of requests
 func NewPercentageBasedChaos(percentage float64, chaosFunc func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error)) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-	rand.Seed(time.Now().UnixNano())
-
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if rand.Float64() < percentage {
 			return chaosFunc(ctx, req, info, handler)
