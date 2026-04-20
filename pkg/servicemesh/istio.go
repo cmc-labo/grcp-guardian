@@ -182,7 +182,7 @@ func (i *IstioMesh) validateSPIFFEID(cert *x509.Certificate) error {
 		if strings.HasPrefix(uri.String(), "spiffe://") {
 			// SPIFFE ID format: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
 			parts := strings.Split(uri.String(), "/")
-			if len(parts) >= 6 {
+			if len(parts) >= 7 {
 				namespace := parts[4]
 				serviceAccount := parts[6]
 

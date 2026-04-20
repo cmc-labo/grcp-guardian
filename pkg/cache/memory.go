@@ -53,8 +53,8 @@ func NewMemoryBackend(config *MemoryConfig) *MemoryBackend {
 
 // Get retrieves a value from the cache
 func (m *MemoryBackend) Get(ctx context.Context, key string) ([]byte, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	entry, exists := m.data[key]
 	if !exists {

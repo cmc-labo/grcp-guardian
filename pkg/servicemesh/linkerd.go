@@ -25,7 +25,7 @@ func NewLinkerdMesh(config *Config) (*LinkerdMesh, error) {
 	config.Provider = ProviderLinkerd
 
 	return &LinkerdMesh{
-		config: config
+		config: config,
 	}, nil
 }
 
